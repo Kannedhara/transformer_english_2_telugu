@@ -159,7 +159,6 @@ class EncoderBlock(nn.Module):
          self.self_attention = lambda x: self.self_attention_block(x, x, x, mask)
          x = self.residual_block[0](x, self.self_attention)
          x = self.residual_block[1](x, self.feed_forward_block)
-
          return x
 
 
@@ -233,11 +232,17 @@ class ProjectionBlock(nn.Module):
     def __init__(self, d_model, vocab_size):
           super().__init__()
 
-          self.linear = nn.Linear(d_model, vocab_size)
+          self.layers = nn.Sequential(
+          nn.Linear(d_model, 
+                    d_model),
+          nn.ReLU(),
+          nn.LayerNorm(d_model),
+          nn.Linear(d_model, vocab_size)
+          )
+
 
     def forward(self, x):
-        x = self.linear(x)
-        #x = torch.softmax(x, dim= -1)
+        x = self.layers(x)
         return x
      
      
@@ -325,7 +330,7 @@ def build_transformer(
     
 
      decoders = []
-     
+
      for _ in range(N):
           self_attn_block = MultiAttentionBlock(seq=src_seq_len, d_model=d_model, h=h)
           multi_attn_block = MultiAttentionBlock(seq=tgt_seq_len, d_model=d_model, h=h)
