@@ -8,7 +8,6 @@ from pathlib import Path
 from dataset import BILangDataset
 from torch.utils.data import DataLoader, random_split
 from model import build_transformer
-from torch.utils.tensorboard import SummaryWriter
 import time
 import os
 from dataset import casual_mask
@@ -24,7 +23,7 @@ EPOCH = 20
 NO_LAYERS = 6
 D_MODEL = 512
 model_filename = os.path.join(MODELS_PATH, f"{name}.pt")
-
+DS_SUBSET=200
 
 
 
@@ -56,10 +55,20 @@ def tokenize(tokenizer_path, dataset, lang):
 
 def get_ds():
     dataset = load_dataset("HackHedron/English_Telugu_Parallel_Corpus")['train']
-    dataset = dataset.select(range(2000))
 
     en_tokenizer = tokenize('tokenizer/shared_en_tokenizer.json', dataset, lang='english')
     te_tokenizer = tokenize('tokenizer/shared_te_tokenizer.json', dataset, lang='telugu')
+
+    def is_valid_length(example):
+        try:
+            src_ids = en_tokenizer.encode(example['english']).ids
+            tgt_ids = te_tokenizer.encode(example['telugu']).ids
+            return len(src_ids) <= SEQ_LENGTH and len(tgt_ids) <= SEQ_LENGTH
+        except:
+            return False
+
+    dataset = dataset.filter(is_valid_length)
+    dataset = dataset.select(range(min(DS_SUBSET, len(dataset)))) 
 
     train_size = int(0.9 * len(dataset))
     test_size = len(dataset) - train_size
@@ -132,12 +141,20 @@ def train():
     model = build_model(en_tokenizer.get_vocab_size(), te_tokenizer.get_vocab_size()).to(device)
 
     Path(MODELS_PATH).mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=os.path.join("runs", name))
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, eps=1e-9)
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=te_tokenizer.token_to_id('[PAD]'), label_smoothing=0.1)
 
     global_step = 0
+
+    if os.path.exists(model_filename):
+        print(f"Loading checkpoint from: {model_filename}")
+        checkpoint = torch.load(model_filename, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        global_step = checkpoint.get('global_step', 0)
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        print(f"Resuming from epoch {start_epoch}, global step {global_step}")
 
     for epoch in range(EPOCH):
         torch.cuda.empty_cache()
@@ -191,6 +208,38 @@ def train():
             'global_step': global_step
         }, model_filename)
 
+def evaluate_saved_model(checkpoint_path, dataset_size=25000):
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print("Using device:", device)
+
+    # Load dataset and tokenizers
+    dataset = load_dataset("HackHedron/English_Telugu_Parallel_Corpus")['train']
+    dataset = dataset.select(range(dataset_size))
+
+    en_tokenizer = tokenize('tokenizer/shared_en_tokenizer.json', dataset, lang='english')
+    te_tokenizer = tokenize('tokenizer/shared_te_tokenizer.json', dataset, lang='telugu')
+
+    # Prepare test split
+    train_size = int(0.9 * len(dataset))
+    test_size = len(dataset) - train_size
+    _, test_dataset = random_split(dataset, [train_size, test_size])
+    test_dataset = BILangDataset(test_dataset, en_tokenizer, te_tokenizer, 'english', 'telugu', SEQ_LENGTH)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+
+    # Build model
+    model = build_model(en_tokenizer.get_vocab_size(), te_tokenizer.get_vocab_size()).to(device)
+
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    # Define loss
+    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=te_tokenizer.token_to_id('[PAD]'), label_smoothing=0.1)
+
+    print(f"Evaluating model from checkpoint: {checkpoint_path}")
+    evaluate(model, test_loader, loss_fn, device, en_tokenizer, te_tokenizer)
+
 
 if __name__ == '__main__':
+    #evaluate_saved_model(model_filename, dataset_size=200)
     train()
