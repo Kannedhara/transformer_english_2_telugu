@@ -23,7 +23,7 @@ EPOCH = 20
 NO_LAYERS = 6
 D_MODEL = 512
 model_filename = os.path.join(MODELS_PATH, f"{name}.pt")
-DS_SUBSET=200
+DS_SUBSET=5000
 
 
 
